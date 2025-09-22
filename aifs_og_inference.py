@@ -7,14 +7,10 @@ from anemoi.inference.outputs.printer import print_state
 
 
 import tqdm
-from bwdl.io.storage.read_write import ZarrOpener
+import xarray as xr
 import glob
 import matplotlib.pyplot as plt
 
-ds_path = "gs://processed-era5_aifs-v0dot2_6h_n320_only_2021-plus-soil/test.zarr"
-zarr_opener = ZarrOpener()
-ds = zarr_opener.open_zarr(ds_path, consolidated=False).sel(time=slice("2021-01-01", "2021-01-15")).load()
-print(ds.time.values)
 
 multistep_input = 2
 
@@ -117,11 +113,11 @@ def create_ground_truth_dataset(ds):
     for idx in tqdm.tqdm(range(ds.dims["time"]), desc="Creating labels dicts"):
         labels_dicts.append(dataset_to_single_dict(ds, idx))
     print("✅ Created labels dicts with one entry per date")
+    return labels_dicts
 
 def create_input_dataset(ds):
     """Create multistep input dataset."""
     all_dicts = []
-
     for start_idx in tqdm.tqdm(range(ds.dims["time"] - multistep_input + 1), desc="Creating input state dicts"):
         print(start_idx)
         one_dict = dataset_to_multistep_dict(ds, start_idx, multistep_input)
@@ -207,11 +203,16 @@ def compute_rmse(preds, labels_by_date):
     plt.close()
 
 
-labels_dict = create_ground_truth_dataset(ds)
-input_state_bw = create_input_dataset(ds)
+ds_path = "/Users/semv/Downloads/era5_aifs-v1_6h_n320_test/test.zarr"
+ds = xr.open_zarr(ds_path)
+ds_sel = ds.sel(time=slice("2019-01-30", "2019-01-31"))
+print(ds_sel.time.values)
+labels_dict = create_ground_truth_dataset(ds_sel)
+input_state_bw = create_input_dataset(ds_sel)
 print("✅ Created input state dict")
 checkpoint = {"huggingface":"ecmwf/aifs-single-1.0"}
 runner = SimpleRunner(checkpoint, device="cuda")
+
 
 # preds = load_predictions()
 # labels_by_date = {entry["date"]: entry for entry in labels_dicts}

@@ -48,6 +48,8 @@ dependencies = [
   "torch>=2.2",
   "torch-geometric>=2.3,<2.5",
   "earthkit",
+  "gcsfs",
+  "zarr",
 ]
 optional-dependencies.all = [  ]
 
