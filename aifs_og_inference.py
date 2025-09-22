@@ -14,7 +14,7 @@ import matplotlib.pyplot as plt
 
 multistep_input = 2
 
-name_map = {
+name_map_input = {
     # surface vars
     "10m_u_component_of_wind": "10u",
     "10m_v_component_of_wind": "10v",
@@ -28,8 +28,7 @@ name_map = {
     "standard_deviation_of_orography": "sdor",
     "slope_of_sub_gridscale_orography": "slor",
     "total_column_water": "tcw",
-    "total_precipitation": "tp",   # si présent comme "tp"
-    "convective_precipitation": "cp",
+
     # forcings
     "cos_latitude": "cos_latitude",
     "sin_latitude": "sin_latitude",
@@ -54,15 +53,19 @@ name_map = {
     "volumetric_soil_water_layer_2": "swvl2",
 }
 
+
+
 def dataset_to_multistep_dict(ds, start_idx, multistep_input, date_coord="time"):
     """Convertit un bloc multistep d'un Dataset en dict {date, fields}"""
     date = str(ds[date_coord].isel(time=start_idx).values)  
     fields = {}
 
     for var in ds.data_vars:
+        if var not in name_map_input:
+            continue
         if "pressure_level" in ds[var].dims:
             for lev_val in ds["pressure_level"].values:
-                short_name = name_map[var]
+                short_name = name_map_input[var]
                 key = f"{short_name}_{lev_val}"
                 arr = ds[var].isel(
                     time=slice(start_idx, start_idx + multistep_input)).sel(
@@ -70,7 +73,7 @@ def dataset_to_multistep_dict(ds, start_idx, multistep_input, date_coord="time")
                 arr = arr.reshape(multistep_input, -1)  
                 fields[key] = arr.tolist()
         else:
-            short_name = name_map.get(var, var)
+            short_name = name_map_input.get(var, var)
             if "time" not in ds[var].dims:
                 arr = ds[var].values
                 arr = np.expand_dims(arr, axis=0)
@@ -92,12 +95,12 @@ def dataset_to_single_dict(ds, idx, date_coord="time"):
     for var in ds.data_vars:
         if "pressure_level" in ds[var].dims:
             for lev_val in ds["pressure_level"].values:
-                short_name = name_map[var]
+                short_name = name_map_input[var]
                 key = f"{short_name}_{lev_val}"
                 arr = ds[var].isel(time=idx).sel(pressure_level=lev_val).values
                 fields[key] = arr.reshape(-1).tolist()
         else:
-            short_name = name_map.get(var, var)
+            short_name = name_map_input.get(var, var)
             arr = ds[var].isel(time=idx).values if "time" in ds[var].dims else ds[var].values
             fields[short_name] = arr.reshape(-1).tolist()
 
@@ -202,16 +205,40 @@ def compute_rmse(preds, labels_by_date):
     plt.show()
     plt.close()
 
+def check_all_input_vars(runner, fields: dict[str, np.ndarray]):
+    """Checking if all input vars are defined.
+    
+    Command showing all AIFS variables: runner.checkpoint.typed_variables.
+    """
+    all_missing_vars = []
+    constant_forcings_inputs = []
+    for var in runner.checkpoint.typed_variables:
+        if runner.checkpoint.typed_variables[var].is_from_input:
+            if var not in fields:
+                print(f"⚠️ Missing input var: {var}")
+                all_missing_vars.append(var)
+        else:
+            print("✅ Not from input var (remove from name_map_input):", var)            
+        if runner.checkpoint.typed_variables[var].is_constant_in_time:
+            constant_forcings_inputs.append(var)
+    return all_missing_vars, constant_forcings_inputs
+
 
 ds_path = "/Users/semv/Downloads/era5_aifs-v1_6h_n320_test/test.zarr"
 ds = xr.open_zarr(ds_path)
 ds_sel = ds.sel(time=slice("2019-01-30", "2019-01-31"))
 print(ds_sel.time.values)
-labels_dict = create_ground_truth_dataset(ds_sel)
+# labels_dict = create_ground_truth_dataset(ds_sel)
 input_state_bw = create_input_dataset(ds_sel)
 print("✅ Created input state dict")
 checkpoint = {"huggingface":"ecmwf/aifs-single-1.0"}
 runner = SimpleRunner(checkpoint, device="cuda")
+
+missing_vars, forcing_vars = check_all_input_vars(runner, input_state_bw[0]["fields"]) 
+runner.constant_forcings_inputs = runner.checkpoint.constant_forcings_inputs(runner, input_state_bw[0])
+runner.dynamic_forcings_inputs = runner.checkpoint.dynamic_forcings_inputs(runner, input_state_bw[0])
+runner.boundary_forcings_inputs = runner.checkpoint.boundary_forcings_inputs(runner, input_state_bw[0])
+normalized = runner.prepare_input_tensor(input_state_bw[0])
 
 
 # preds = load_predictions()
