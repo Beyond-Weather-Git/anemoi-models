@@ -5,7 +5,6 @@ import numpy as np
 from anemoi.inference.runners.simple import SimpleRunner
 from anemoi.inference.outputs.printer import print_state
 
-
 import tqdm
 import xarray as xr
 import glob
@@ -232,7 +231,7 @@ print(ds_sel.time.values)
 input_state_bw = create_input_dataset(ds_sel)
 print("✅ Created input state dict")
 checkpoint = {"huggingface":"ecmwf/aifs-single-1.0"}
-runner = SimpleRunner(checkpoint, device="cuda")
+runner = SimpleRunner(checkpoint, device="cpu")
 
 missing_vars, forcing_vars = check_all_input_vars(runner, input_state_bw[0]["fields"]) 
 runner.constant_forcings_inputs = runner.checkpoint.constant_forcings_inputs(runner, input_state_bw[0])
@@ -240,6 +239,14 @@ runner.dynamic_forcings_inputs = runner.checkpoint.dynamic_forcings_inputs(runne
 runner.boundary_forcings_inputs = runner.checkpoint.boundary_forcings_inputs(runner, input_state_bw[0])
 normalized = runner.prepare_input_tensor(input_state_bw[0])
 
+from omegaconf import OmegaConf
+aifs_config = OmegaConf.load("config_finetuning.yaml")
+
+
+
+
+# from anemoi.models.preprocessing import Processors
+# Processors(aifs_config, runner.checkpoint.data_indices)
 
 # preds = load_predictions()
 # labels_by_date = {entry["date"]: entry for entry in labels_dicts}
