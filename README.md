@@ -13,6 +13,19 @@ The documentation can be found at https://anemoi-models.readthedocs.io/.
 
 ## Install
 
+
+```
+conda create --name anemoi python=3.11
+```
+```
+conda activate anemoi
+```
+```
+pip install -e .  
+```
+Run: run_AIFS_v1.ipynb.
+
+
 Install via `pip` with:
 
 ```
