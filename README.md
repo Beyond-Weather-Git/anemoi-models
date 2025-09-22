@@ -30,7 +30,9 @@ conda activate anemoi
 ```
 pip install -e .  
 ```
-Run: run_AIFS_v1.ipynb.
+```
+pip install "anemoi-inference[huggingface]==0.4.9"
+```
 
 
 Install via `pip` with:

@@ -223,7 +223,7 @@ def check_all_input_vars(runner, fields: dict[str, np.ndarray]):
     return all_missing_vars, constant_forcings_inputs
 
 
-ds_path = "/Users/semv/Downloads/era5_aifs-v1_6h_n320_test/test.zarr"
+ds_path = "/Users/semv/surfdrive/bwdl_shared_datasets/datasets/processed/era5_aifs-v1_6h_n320_test/test.zarr"
 ds = xr.open_zarr(ds_path)
 ds_sel = ds.sel(time=slice("2019-01-30", "2019-01-31"))
 print(ds_sel.time.values)
@@ -241,8 +241,14 @@ normalized = runner.prepare_input_tensor(input_state_bw[0])
 
 from omegaconf import OmegaConf
 aifs_config = OmegaConf.load("config_finetuning.yaml")
+aifs_config.hardware.paths.data = ds_path
+aifs_config.hardware.paths.output = "/path/to/your/output"
+aifs_config.training.fork_run_id = ""  # or actual run ID
+from anemoi.models.data_indices.collection import IndexCollection
 
+IndexCollection(aifs_config, dict(runner.checkpoint._metadata._indices)["data"]["input"])
 
+# they use torch.set_float32_matmul_precision("high")
 
 
 # from anemoi.models.preprocessing import Processors
