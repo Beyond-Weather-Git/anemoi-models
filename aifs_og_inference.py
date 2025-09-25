@@ -4,6 +4,7 @@ import numpy as np
 
 from anemoi.inference.runners.simple import SimpleRunner
 from anemoi.inference.outputs.printer import print_state
+import torch
 
 import tqdm
 import xarray as xr
@@ -29,15 +30,15 @@ name_map_input = {
     "total_column_water": "tcw",
 
     # forcings
-    "cos_latitude": "cos_latitude",
-    "sin_latitude": "sin_latitude",
-    "cos_longitude": "cos_longitude",
-    "sin_longitude": "sin_longitude",
-    "cos_julian_day": "cos_julian_day",
-    "sin_julian_day": "sin_julian_day",
-    "cos_local_time": "cos_local_time",
-    "sin_local_time": "sin_local_time",
-    "insolation": "insolation",
+    # "cos_latitude": "cos_latitude",
+    # "sin_latitude": "sin_latitude",
+    # "cos_longitude": "cos_longitude",
+    # "sin_longitude": "sin_longitude",
+    # "cos_julian_day": "cos_julian_day",
+    # "sin_julian_day": "sin_julian_day",
+    # "cos_local_time": "cos_local_time",
+    # "sin_local_time": "sin_local_time",
+    # "insolation": "insolation",
     # pressure-level vars (need suffix)
     "geopotential": "z",
     "temperature": "t",
@@ -50,15 +51,30 @@ name_map_input = {
     "soil_temperature_level_2": "stl2",
     "volumetric_soil_water_layer_1": "swvl1",
     "volumetric_soil_water_layer_2": "swvl2",
+
+    # "convective_precipitation": "cp",
+    # "total_precipitation": "tp",
+    # "100m_u_component_of_wind": "100u",
+    # "100m_v_component_of_wind": "100v",
+    # "high_cloud_cover":"hcc",
+    # "low_cloud_cover":"lcc",
+    # "medium_cloud_cover":"mcc",
+    # "runoff":"ro",
+    # "snowfall":"sf",
+    # "surface_solar_radiation_downwards":"ssrd",
+    # "surface_thermal_radiation_downwards":"strd",
+    # "total_cloud_cover":"tcc"
+
+    
 }
 
 
 
 def dataset_to_multistep_dict(ds, start_idx, multistep_input, date_coord="time"):
     """Convertit un bloc multistep d'un Dataset en dict {date, fields}"""
-    date = str(ds[date_coord].isel(time=start_idx).values)  
+    date = str(ds[date_coord].isel(time=start_idx+multistep_input-1).values) 
     fields = {}
-
+    arr_app = []
     for var in ds.data_vars:
         if var not in name_map_input:
             continue
@@ -69,26 +85,35 @@ def dataset_to_multistep_dict(ds, start_idx, multistep_input, date_coord="time")
                 arr = ds[var].isel(
                     time=slice(start_idx, start_idx + multistep_input)).sel(
                     pressure_level=lev_val).values
+                # breakpoint()
                 arr = arr.reshape(multistep_input, -1)  
+                print("MEAN OF ", key, arr.mean())
                 fields[key] = arr.tolist()
+                arr_app.append(arr)
         else:
             short_name = name_map_input.get(var, var)
             if "time" not in ds[var].dims:
                 arr = ds[var].values
                 arr = np.expand_dims(arr, axis=0)
                 arr = np.repeat(arr, multistep_input, axis=0)
+                print("MEAN OF ", short_name, arr.mean())
                 fields[short_name] = arr.tolist()
+                arr_app.append(arr)
             else:
                 arr = ds[var].isel(
                     time=slice(start_idx, start_idx + multistep_input)
                 ).values
                 arr = arr.reshape(multistep_input, -1)
+                print("MEAN OF ", short_name, arr.mean())
                 fields[short_name] = arr.tolist()
-
+                arr_app.append(arr)
+    # breakpoint()
     return {"date": date, "fields": fields}
 
 def dataset_to_single_dict(ds, idx, date_coord="time"):
+    idx = idx+1
     date = str(ds[date_coord].isel(time=idx).values)
+    print("selecting date", date)
     fields = {}
 
     for var in ds.data_vars:
@@ -112,7 +137,7 @@ def dataset_to_single_dict(ds, idx, date_coord="time"):
 def create_ground_truth_dataset(ds):
     """Create ground truth dataset."""
     labels_dicts = []
-    for idx in tqdm.tqdm(range(ds.dims["time"]), desc="Creating labels dicts"):
+    for idx in tqdm.tqdm(range(ds.dims["time"]- multistep_input + 1), desc="Creating labels dicts"):
         labels_dicts.append(dataset_to_single_dict(ds, idx))
     print("✅ Created labels dicts with one entry per date")
     return labels_dicts
@@ -127,12 +152,15 @@ def create_input_dataset(ds):
             one_dict["fields"][k] = np.array(v)
         one_dict["date"] = datetime.datetime.fromisoformat(one_dict["date"].replace("Z", "+00:00"))
         all_dicts.append(one_dict)
+        if start_idx == 0:
+            break
     return all_dicts
 
 
 def run_inference():
     for input_state in tqdm.tqdm(input_state_bw, desc="Running model and saving npz"):
-        for state in runner.run(input_state=input_state, lead_time=6):
+        for state in runner.run(input_state=input_state, lead_time=12):
+            print("computing infefrence for date", state["date"])
             print_state(state)
             print("geo 500 mean", state["fields"]["z_500"].mean())
             np.savez_compressed(f"output_{state['date'].strftime('%Y%m%d%H')}.npz",
@@ -223,37 +251,25 @@ def check_all_input_vars(runner, fields: dict[str, np.ndarray]):
     return all_missing_vars, constant_forcings_inputs
 
 
-ds_path = "/Users/semv/surfdrive/bwdl_shared_datasets/datasets/processed/era5_aifs-v1_6h_n320_test/test.zarr"
+ds_path = "/home/ubuntu/bw-dl/data/datasets/processed/era5_aifs-v1_6h_n320_test/test.zarr"
 ds = xr.open_zarr(ds_path)
 ds_sel = ds.sel(time=slice("2019-01-30", "2019-01-31"))
+
 print(ds_sel.time.values)
 # labels_dict = create_ground_truth_dataset(ds_sel)
 input_state_bw = create_input_dataset(ds_sel)
 print("✅ Created input state dict")
 checkpoint = {"huggingface":"ecmwf/aifs-single-1.0"}
-runner = SimpleRunner(checkpoint, device="cpu")
-
+runner = SimpleRunner(checkpoint, device="cuda")
+# breakpoint()
 missing_vars, forcing_vars = check_all_input_vars(runner, input_state_bw[0]["fields"]) 
 runner.constant_forcings_inputs = runner.checkpoint.constant_forcings_inputs(runner, input_state_bw[0])
 runner.dynamic_forcings_inputs = runner.checkpoint.dynamic_forcings_inputs(runner, input_state_bw[0])
 runner.boundary_forcings_inputs = runner.checkpoint.boundary_forcings_inputs(runner, input_state_bw[0])
 normalized = runner.prepare_input_tensor(input_state_bw[0])
-
-from omegaconf import OmegaConf
-aifs_config = OmegaConf.load("config_finetuning.yaml")
-aifs_config.hardware.paths.data = ds_path
-aifs_config.hardware.paths.output = "/path/to/your/output"
-aifs_config.training.fork_run_id = ""  # or actual run ID
-from anemoi.models.data_indices.collection import IndexCollection
-
-IndexCollection(aifs_config, dict(runner.checkpoint._metadata._indices)["data"]["input"])
-
-# they use torch.set_float32_matmul_precision("high")
-
-
-# from anemoi.models.preprocessing import Processors
-# Processors(aifs_config, runner.checkpoint.data_indices)
-
+run_inference()
+print("all done")
+breakpoint()
 # preds = load_predictions()
 # labels_by_date = {entry["date"]: entry for entry in labels_dicts}
 # compute_rmse(preds, labels_by_date)
