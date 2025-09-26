@@ -74,7 +74,6 @@ def dataset_to_multistep_dict(ds, start_idx, multistep_input, date_coord="time")
     """Convertit un bloc multistep d'un Dataset en dict {date, fields}"""
     date = str(ds[date_coord].isel(time=start_idx+multistep_input-1).values) 
     fields = {}
-    arr_app = []
     for var in ds.data_vars:
         if var not in name_map_input:
             continue
@@ -87,26 +86,26 @@ def dataset_to_multistep_dict(ds, start_idx, multistep_input, date_coord="time")
                     pressure_level=lev_val).values
                 # breakpoint()
                 arr = arr.reshape(multistep_input, -1)  
-                print("MEAN OF ", key, arr.mean())
+                # print("MEAN OF ", key, arr.mean())
                 fields[key] = arr.tolist()
-                arr_app.append(arr)
+                # arr_app.append(arr)
         else:
             short_name = name_map_input.get(var, var)
             if "time" not in ds[var].dims:
                 arr = ds[var].values
                 arr = np.expand_dims(arr, axis=0)
                 arr = np.repeat(arr, multistep_input, axis=0)
-                print("MEAN OF ", short_name, arr.mean())
+                # print("MEAN OF ", short_name, arr.mean())
                 fields[short_name] = arr.tolist()
-                arr_app.append(arr)
+                # arr_app.append(arr)
             else:
                 arr = ds[var].isel(
                     time=slice(start_idx, start_idx + multistep_input)
                 ).values
                 arr = arr.reshape(multistep_input, -1)
-                print("MEAN OF ", short_name, arr.mean())
+                # print("MEAN OF ", short_name, arr.mean())
                 fields[short_name] = arr.tolist()
-                arr_app.append(arr)
+                # arr_app.append(arr)
     # breakpoint()
     return {"date": date, "fields": fields}
 
@@ -152,26 +151,30 @@ def create_input_dataset(ds):
             one_dict["fields"][k] = np.array(v)
         one_dict["date"] = datetime.datetime.fromisoformat(one_dict["date"].replace("Z", "+00:00"))
         all_dicts.append(one_dict)
-        if start_idx == 0:
-            break
+
     return all_dicts
 
 
 def run_inference():
     for input_state in tqdm.tqdm(input_state_bw, desc="Running model and saving npz"):
-        for state in runner.run(input_state=input_state, lead_time=12):
-            print("computing infefrence for date", state["date"])
-            print_state(state)
-            print("geo 500 mean", state["fields"]["z_500"].mean())
-            np.savez_compressed(f"output_{state['date'].strftime('%Y%m%d%H')}.npz",
+        print("🍎computing infefrence for DATE", input_state["date"])
+        for state in runner.run(input_state=input_state, lead_time=120):
+            
+            # breakpoint()
+            # print_state(state)
+            # print("geo 500 mean", state["fields"]["z_500"].mean())
+            # print("🍋SAVING TO OUTPUT DIR", f"/home/ubuntu/og_aifs_preds/output_{state['date'].strftime('%Y%m%d%H')}.npz")
+            np.savez_compressed(f"/home/ubuntu/og_aifs_preds/output_{input_state['date'].strftime('%Y%m%d%H')}_step{state['step']}.npz",
                         date=state["date"].isoformat(),
                         **state["fields"])
+            
 
 
 def load_predictions():
     # --- Load predictions from .npz ---
-    pred_files = sorted(glob.glob("output_*.npz"))
+    pred_files = sorted(glob.glob("/home/ubuntu/og_aifs_preds/output_*.npz"))
     preds = []
+    # breakpoint()
     for fname in tqdm.tqdm(pred_files, desc="Loading predictions"):
         pred_npz = np.load(fname, allow_pickle=True)
         date = datetime.datetime.fromisoformat(str(pred_npz["date"]))
@@ -179,9 +182,10 @@ def load_predictions():
         preds.append({"date": date, "fields": fields})
 
     print(f"✅ Loaded {len(preds)} predictions from .npz")
+    return preds
 
 def compute_rmse(preds, labels_by_date):
-    variables = ["2t", "10u", "10v"]
+    variables = ["z_500"]
     rmse_by_var = {}
 
     for var in variables:
@@ -250,29 +254,29 @@ def check_all_input_vars(runner, fields: dict[str, np.ndarray]):
             constant_forcings_inputs.append(var)
     return all_missing_vars, constant_forcings_inputs
 
-
 ds_path = "/home/ubuntu/bw-dl/data/datasets/processed/era5_aifs-v1_6h_n320_test/test.zarr"
 ds = xr.open_zarr(ds_path)
-ds_sel = ds.sel(time=slice("2019-01-30", "2019-01-31"))
+ds_sel = ds.sel(time=slice("2019-01-30", "2019-02-14"))
 
 print(ds_sel.time.values)
-# labels_dict = create_ground_truth_dataset(ds_sel)
+
 input_state_bw = create_input_dataset(ds_sel)
 print("✅ Created input state dict")
 checkpoint = {"huggingface":"ecmwf/aifs-single-1.0"}
 runner = SimpleRunner(checkpoint, device="cuda")
-# breakpoint()
-missing_vars, forcing_vars = check_all_input_vars(runner, input_state_bw[0]["fields"]) 
-runner.constant_forcings_inputs = runner.checkpoint.constant_forcings_inputs(runner, input_state_bw[0])
-runner.dynamic_forcings_inputs = runner.checkpoint.dynamic_forcings_inputs(runner, input_state_bw[0])
-runner.boundary_forcings_inputs = runner.checkpoint.boundary_forcings_inputs(runner, input_state_bw[0])
-normalized = runner.prepare_input_tensor(input_state_bw[0])
+# # breakpoint()
+# missing_vars, forcing_vars = check_all_input_vars(runner, input_state_bw[0]["fields"]) 
+# runner.constant_forcings_inputs = runner.checkpoint.constant_forcings_inputs(runner, input_state_bw[0])
+# runner.dynamic_forcings_inputs = runner.checkpoint.dynamic_forcings_inputs(runner, input_state_bw[0])
+# runner.boundary_forcings_inputs = runner.checkpoint.boundary_forcings_inputs(runner, input_state_bw[0])
+# normalized = runner.prepare_input_tensor(input_state_bw[0])
 run_inference()
 print("all done")
-breakpoint()
-# preds = load_predictions()
-# labels_by_date = {entry["date"]: entry for entry in labels_dicts}
-# compute_rmse(preds, labels_by_date)
+# breakpoint()
+preds = load_predictions()
+labels_dict = create_ground_truth_dataset(ds_sel)
+labels_by_date = {entry["date"]: entry for entry in labels_dict}
+compute_rmse(preds, labels_by_date)
 
 
 
