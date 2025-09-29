@@ -5,13 +5,18 @@ import numpy as np
 from anemoi.inference.runners.simple import SimpleRunner
 from anemoi.inference.outputs.printer import print_state
 import torch
-
+from collections import defaultdict
 import tqdm
 import xarray as xr
 import glob
 import matplotlib.pyplot as plt
 
-
+# torch.backends.cudnn.benchmark = False
+# torch.backends.cudnn.deterministic = True
+# torch.use_deterministic_algorithms(True)
+torch.backends.cudnn.benchmark = True        # allow cuDNN to find the fastest algo
+torch.backends.cudnn.deterministic = False   # disable forced determinism
+torch.use_deterministic_algorithms(False)  
 multistep_input = 2
 
 name_map_input = {
@@ -115,9 +120,9 @@ def dataset_to_single_dict(ds, idx, date_coord="time"):
     print("selecting date", date)
     fields = {}
 
-    for var in ds.data_vars:
+    for var in ["2m_temperature"]:
         if "pressure_level" in ds[var].dims:
-            for lev_val in ds["pressure_level"].values:
+            for lev_val in [500]:
                 short_name = name_map_input[var]
                 key = f"{short_name}_{lev_val}"
                 arr = ds[var].isel(time=idx).sel(pressure_level=lev_val).values
@@ -145,17 +150,20 @@ def create_input_dataset(ds):
     """Create multistep input dataset."""
     all_dicts = []
     for start_idx in tqdm.tqdm(range(ds.dims["time"] - multistep_input + 1), desc="Creating input state dicts"):
-        print(start_idx)
         one_dict = dataset_to_multistep_dict(ds, start_idx, multistep_input)
         for k, v in one_dict["fields"].items():
             one_dict["fields"][k] = np.array(v)
         one_dict["date"] = datetime.datetime.fromisoformat(one_dict["date"].replace("Z", "+00:00"))
         all_dicts.append(one_dict)
 
+        if start_idx==0:
+            break
+
     return all_dicts
 
 
 def run_inference():
+
     for input_state in tqdm.tqdm(input_state_bw, desc="Running model and saving npz"):
         print("🍎computing infefrence for DATE", input_state["date"])
         for state in runner.run(input_state=input_state, lead_time=120):
@@ -164,7 +172,7 @@ def run_inference():
             # print_state(state)
             # print("geo 500 mean", state["fields"]["z_500"].mean())
             # print("🍋SAVING TO OUTPUT DIR", f"/home/ubuntu/og_aifs_preds/output_{state['date'].strftime('%Y%m%d%H')}.npz")
-            np.savez_compressed(f"/home/ubuntu/og_aifs_preds/output_{input_state['date'].strftime('%Y%m%d%H')}_step{state['step']}.npz",
+            np.savez_compressed(f"/home/ubuntu/og_aifs_preds_new/output_{input_state['date'].strftime('%Y%m%d%H')}_step{state['step']}.npz",
                         date=state["date"].isoformat(),
                         **state["fields"])
             
@@ -172,67 +180,89 @@ def run_inference():
 
 def load_predictions():
     # --- Load predictions from .npz ---
-    pred_files = sorted(glob.glob("/home/ubuntu/og_aifs_preds/output_*.npz"))
-    preds = []
+    pred_files = sorted(glob.glob("/home/ubuntu/og_aifs_preds_new/output_*.npz"))
+    preds = defaultdict(dict)
     # breakpoint()
     for fname in tqdm.tqdm(pred_files, desc="Loading predictions"):
         pred_npz = np.load(fname, allow_pickle=True)
         date = datetime.datetime.fromisoformat(str(pred_npz["date"]))
-        fields = {k: pred_npz[k] for k in pred_npz.files if k != "date"}
-        preds.append({"date": date, "fields": fields})
+        # extract rollout_step from filename: output_<date>_step_<rollout_step>.npz
+        step_str = fname.split("_step")[-1].replace(".npz", "")
+        rollout_step = int(step_str)
+        fields = {k: pred_npz[k] for k in pred_npz.files if k == "2t"}
+        # preds.append({"date": date, "fields": fields})
+        preds[date][rollout_step] = fields
+
+
 
     print(f"✅ Loaded {len(preds)} predictions from .npz")
     return preds
 
 def compute_rmse(preds, labels_by_date):
-    variables = ["z_500"]
+    variables = ["2t"]
     rmse_by_var = {}
-
     for var in variables:
+        sq_errors_by_step = defaultdict(list)
         all_sq_errors = []
 
-        for pred in preds:
-            date = pred["date"]
-
+        # for pred in preds:
+        for date, step_dict in preds.items():
+            # date = pred["date"]
             if date not in labels_by_date:
                 print(f"⚠️ No label found for {date}, skipping")
                 continue
 
             label = labels_by_date[date]
-
+            for rollout_step, fields in step_dict.items():
+                pred_vals = np.array(fields[var], dtype=float).reshape(-1)
+                label_vals = np.array(label["fields"][var], dtype=float)
             # flatten arrays (spatial points)
-            pred_vals = np.array(pred["fields"][var], dtype=float).reshape(-1)
-            label_vals = np.array(label["fields"][var], dtype=float).reshape(-1)
+            # pred_vals = np.array(pred["fields"][var], dtype=float).reshape(-1)
+            # label_vals = np.array(label["fields"][var], dtype=float).reshape(-1)
 
-            # accumulate squared error pointwise
-            sq_err = (pred_vals - label_vals) ** 2
-            all_sq_errors.append(sq_err)
+                # accumulate squared error pointwise
+                sq_err = (pred_vals - label_vals) ** 2
+                all_sq_errors.append(sq_err)
+                sq_errors_by_step[rollout_step].append(sq_err)
 
-        if not all_sq_errors:
-            print(f"⚠️ No errors accumulated for {var}, skipping")
-            continue
+        rmse_by_step = {}
+        for rollout_step, errs in sorted(sq_errors_by_step.items()):
+            all_sq_errors = np.concatenate(errs)
+            rmse_global = np.sqrt(all_sq_errors.mean())
+            rmse_by_step[rollout_step] = rmse_global
+            print(f"✅ RMSE for {var}, step {rollout_step}: {rmse_global:.4f}")
 
-        # concat all errors (time × space)
-        all_sq_errors = np.concatenate(all_sq_errors)
+        rmse_by_var[var] = rmse_by_step
 
-        # global RMSE
-        rmse_global = np.sqrt(all_sq_errors.mean())
-        rmse_by_var[var] = rmse_global
-        print(f"✅ Global RMSE for {var}: {rmse_global:.4f}")
-
+        # # concat all errors (time × space)
+        # all_sq_errors = np.concatenate(all_sq_errors)
+        
+        # # global RMSE
+        # rmse_global = np.sqrt(all_sq_errors.mean())
+        # rmse_by_var[var] = rmse_global
+        # print(f"✅ Global RMSE for {var}: {rmse_global:.4f}")
     # --- Plot all three ---
-    lead_times = [6]  # adjust if you have multiple forecast lead times
+
+    keys = list(preds.keys())
+    first_date = keys[0].strftime("%Y-%m-%d")
+    last_date = keys[-1].strftime("%Y-%m-%d")
+    base_lead = 6  # adjust if you have multiple forecast lead times
+    n_steps = len(rmse_by_step.keys())
+
+    lead_times = [i * base_lead for i in range(n_steps)]
     plt.figure(figsize=(8, 5))
 
-    for var, rmse_val in rmse_by_var.items():
-        plt.plot(lead_times, [rmse_val], marker="o", linestyle="-", label=var)
+    for var, rmse_dict in rmse_by_var.items():
+        steps = sorted(rmse_dict.keys())
+        rmse_val = [rmse_dict[step] for step in steps]
+        plt.plot(lead_times, rmse_val, marker="o", linestyle="-", label=var)
 
     plt.xlabel("Lead time (hours)")
     plt.ylabel("RMSE (global, time+space)")
-    plt.title("RMSE vs Lead Time (AIFS pipeline, January 2021)")
+    plt.title(f"RMSE vs Lead Time (AIFS pipeline, {first_date}-{last_date})")
     plt.grid(True)
     plt.legend()
-    plt.savefig("rmse_vs_lead_time.png")
+    plt.savefig("rmse_vs_lead_time_temperature.png")
     plt.show()
     plt.close()
 
@@ -254,10 +284,10 @@ def check_all_input_vars(runner, fields: dict[str, np.ndarray]):
             constant_forcings_inputs.append(var)
     return all_missing_vars, constant_forcings_inputs
 
-ds_path = "/home/ubuntu/bw-dl/data/datasets/processed/era5_aifs-v1_6h_n320_test/test.zarr"
+ds_path = "/home/ubuntu/bw-dl/data/datasets/processed/era5_aifs-v1_6h_n320_small/test.zarr"
 ds = xr.open_zarr(ds_path)
-ds_sel = ds.sel(time=slice("2019-01-30", "2019-02-14"))
-
+ds_sel = ds.sel(time=slice("2021-01-30", "2021-01-31"))
+# breakpoint()
 print(ds_sel.time.values)
 
 input_state_bw = create_input_dataset(ds_sel)
@@ -270,9 +300,9 @@ runner = SimpleRunner(checkpoint, device="cuda")
 # runner.dynamic_forcings_inputs = runner.checkpoint.dynamic_forcings_inputs(runner, input_state_bw[0])
 # runner.boundary_forcings_inputs = runner.checkpoint.boundary_forcings_inputs(runner, input_state_bw[0])
 # normalized = runner.prepare_input_tensor(input_state_bw[0])
-run_inference()
+# run_inference()
 print("all done")
-# breakpoint()
+
 preds = load_predictions()
 labels_dict = create_ground_truth_dataset(ds_sel)
 labels_by_date = {entry["date"]: entry for entry in labels_dict}
